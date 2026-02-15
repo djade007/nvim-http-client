@@ -271,7 +271,7 @@ M.send_request = function(request)
         request.http_version))
 
     if current_request then
-        if current_request.is_shutdown then
+        if current_request.is_shutdown or current_request.code then
             current_request = nil
         else
             vvv.debug_print("A request is already in progress")
