@@ -271,8 +271,12 @@ M.send_request = function(request)
         request.http_version))
 
     if current_request then
-        vvv.debug_print("A request is already in progress")
-        return
+        if current_request.is_shutdown then
+            current_request = nil
+        else
+            vvv.debug_print("A request is already in progress")
+            return
+        end
     end
 
     local config = require('http_client.config')
