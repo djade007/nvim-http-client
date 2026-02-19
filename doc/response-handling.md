@@ -33,24 +33,41 @@ Response handlers are defined using the following syntax:
 GET {{host}}/api/endpoint
 
 > {%
-// Your JavaScript code here
+-- Your Lua code here
 %}
 ```
 
-The code between `> {%` and `%}` is executed after the response is received.
+The code between `> {%` and `%}` is executed as **Lua** after the response is received.
 
 ### Available Objects
 
 Within a response handler, you have access to:
 
 - `response` - The HTTP response object
-  - `response.body` - The response body (parsed as JSON if possible)
+  - `response.body` - The response body (parsed as JSON if possible, otherwise a string)
   - `response.headers` - Response headers object with additional methods
     - `response.headers.valueOf(headerName)` - Get header value with case-insensitive lookup
   - `response.status` - HTTP status code
 
 - `client` - The HTTP client object
   - `client.global.set(key, value)` - Set a global variable for use in subsequent requests
+
+### Standard Library
+
+The following Lua standard library modules and functions are available inside a handler:
+
+| Available | Description |
+|---|---|
+| `os.time()` | Current Unix timestamp |
+| `os.date(format, time)` | Format a timestamp |
+| `os.clock()` | CPU time |
+| `math.*` | All math functions |
+| `string.*` | All string functions |
+| `table.*` | All table functions |
+| `tostring`, `tonumber`, `type` | Type conversion |
+| `pairs`, `ipairs`, `next`, `select` | Iteration helpers |
+| `print` | Print to Neovim messages |
+| `error` | Raise an error |
 
 ### Example: Extracting an Authentication Token
 
@@ -65,14 +82,7 @@ Content-Type: application/json
 }
 
 > {%
-// Extract the token from the response
-const token = response.body.token;
-
-// Store it as a global variable
-client.global.set("auth_token", token);
-
-// Log information (appears in response window)
-console.log("Token extracted and stored as auth_token");
+client.global.set("auth_token", response.body.token)
 %}
 
 ### Get Protected Resource
@@ -87,19 +97,22 @@ Authorization: Bearer {{auth_token}}
 GET {{host}}/api/users
 
 > {%
-// Count the number of users
-const userCount = response.body.length;
-client.global.set("userCount", userCount);
+client.global.set("user_count", tostring(#response.body))
 
-// Find a specific user
-const adminUser = response.body.find(user => user.role === 'admin');
-if (adminUser) {
-    client.global.set("adminId", adminUser.id);
-}
+local admin
+for _, user in ipairs(response.body) do
+    if user.role == "admin" then
+        admin = user
+        break
+    end
+end
+if admin then
+    client.global.set("admin_id", admin.id)
+end
 %}
 
 ### Get Admin Details
-GET {{host}}/api/users/{{adminId}}
+GET {{host}}/api/users/{{admin_id}}
 ```
 
 ### Example: Extracting Headers
@@ -115,22 +128,38 @@ Content-Type: application/json
 }
 
 > {%
-// Extract session ID from response headers using valueOf
-const sessionId = response.headers.valueOf("mcp-session-id");
-if (sessionId) {
-    client.global.set("session-id", sessionId);
-    console.log("Session ID extracted: " + sessionId);
-} else {
-    console.log("No session ID found in response headers");
-}
+local session_id = response.headers.valueOf("mcp-session-id")
+if session_id then
+    client.global.set("session_id", session_id)
+end
 %}
 
 ### Use Session in Next Request
 GET {{host}}/api/protected
-X-Session-ID: {{session-id}}
+X-Session-ID: {{session_id}}
 ```
 
-**Note:** The `valueOf` method provides case-insensitive header lookup, so `response.headers.valueOf("mcp-session-id")` will work even if the actual header is `MCP-Session-ID` or `Mcp-Session-Id`.
+**Note:** The `valueOf` method provides case-insensitive header lookup, so `response.headers.valueOf("mcp-session-id")` will match `MCP-Session-ID` or `Mcp-Session-Id`.
+
+### Example: Computing Timestamps in a Handler
+
+If you need timestamps derived at handler time (e.g. to store alongside a token), use `os.date`:
+
+```http
+### Login
+POST {{host}}/api/login
+Content-Type: application/json
+
+{"username": "{{username}}", "password": "{{password}}"}
+
+> {%
+client.global.set("auth_token", response.body.access_token)
+local expires = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() + 3600)
+client.global.set("token_expires_at", expires)
+%}
+```
+
+For timestamps used directly in request bodies, prefer the built-in `$isoTimestamp` dynamic variable instead — see [Environment Files and Variables](environments.md#dynamic-variables).
 
 ## Saving Responses
 
@@ -142,4 +171,4 @@ You can save the current response body to a file using:
 When saving a response:
 1. You'll be prompted for a filename
 2. The response body will be formatted (if it's JSON or XML)
-3. The formatted content will be saved to the specified file 
+3. The formatted content will be saved to the specified file

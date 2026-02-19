@@ -74,6 +74,48 @@ Environment variables can be used in:
 - Headers
 - Request bodies
 
+## Dynamic Variables
+
+Dynamic variables are built-in variables prefixed with `$` that are resolved at request-send time. They do not need to be defined in an environment file.
+
+| Variable | Example output | Description |
+|---|---|---|
+| `{{$isoTimestamp}}` | `2026-02-19T10:30:45Z` | Current UTC time in ISO 8601 |
+| `{{$isoTimestamp -1 m}}` | `2026-02-19T10:29:45Z` | UTC time with offset (units: `s`, `m`, `h`, `d`) |
+| `{{$isoTimestamp +20 m}}` | `2026-02-19T10:50:45Z` | Positive offset |
+| `{{$timestamp}}` | `1740000000` | Current Unix timestamp (seconds) |
+| `{{$uuid}}` | `f47ac10b-58cc-...` | Random UUID v4 |
+| `{{$randomInt}}` | `742` | Random integer between 1 and 1000 |
+| `{{$randomInt 100 999}}` | `583` | Random integer in a custom range |
+
+### Offset syntax for `$isoTimestamp`
+
+```
+{{$isoTimestamp [+/-][amount] [unit]}}
+```
+
+Supported units:
+- `s` — seconds
+- `m` — minutes
+- `h` — hours
+- `d` — days
+
+### Example usage
+
+```http
+### Submit event with dynamic timestamp
+POST {{host}}/api/events
+Content-Type: application/json
+Authorization: Bearer {{auth_token}}
+
+{
+    "event_id": "{{$uuid}}",
+    "occurred_at": "{{$isoTimestamp -1 m}}",
+    "expires_at": "{{$isoTimestamp +24 h}}",
+    "value": "{{$randomInt 1 100}}"
+}
+```
+
 ## Selecting Environments
 
 ### Commands
@@ -108,7 +150,7 @@ Content-Type: application/json
 }
 
 > {%
-client.global.set("token", response.body.token);
+client.global.set("token", response.body.token)
 %}
 
 ### Get Protected Resource
@@ -121,8 +163,10 @@ Global variables:
 - Take precedence over environment variables
 - Can be used just like environment variables
 
+See [Response Handling](response-handling.md) for full details on handler syntax and the available Lua standard library.
+
 ## Running Without Environment
 
 You can run requests without selecting an environment file, but if your request uses environment variables, the plugin will display a message suggesting to select an environment file.
 
-For dry runs, you'll see a warning in the output if environment variables are needed but not set. 
+For dry runs, you'll see a warning in the output if environment variables are needed but not set.
