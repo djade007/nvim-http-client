@@ -120,8 +120,12 @@ local function prettify_json(json_str)
                 end
                 return "{\n" .. next_indent .. table.concat(items, ",\n" .. next_indent) .. "\n" .. indent .. "}"
             end
+        elseif val == vim.NIL then
+            return "null"
         elseif type(val) == "string" then
             return string.format('%q', val)
+        elseif type(val) == "boolean" then
+            return tostring(val)
         else
             return tostring(val)
         end
