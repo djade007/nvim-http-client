@@ -196,13 +196,68 @@ M.parse_all_requests = function(lines)
     return requests
 end
 
+-- Resolve built-in dynamic variables that start with $.
+-- Supported:
+--   $isoTimestamp                 current UTC time as ISO 8601
+--   $isoTimestamp [+/-N] [unit]  offset from now (units: s, m, h, d)
+--   $timestamp                   current Unix timestamp (seconds)
+--   $uuid                        random UUID v4
+--   $randomInt                   random integer 1–1000
+--   $randomInt [min] [max]       random integer in [min, max]
+local function resolve_dynamic(var)
+    if var:sub(1, 1) ~= "$" then
+        return nil
+    end
+
+    -- $isoTimestamp with optional offset: "$isoTimestamp [+/-N] [unit]"
+    if var == "$isoTimestamp" or var:match("^%$isoTimestamp") then
+        local offset_secs = 0
+        local sign, amount, unit = var:match("^%$isoTimestamp%s+([%+%-]?)(%d+)%s+([smhd])$")
+        if amount then
+            local multipliers = { s = 1, m = 60, h = 3600, d = 86400 }
+            offset_secs = tonumber(amount) * (multipliers[unit] or 1)
+            if sign == "-" then
+                offset_secs = -offset_secs
+            end
+        end
+        return os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() + offset_secs)
+    end
+
+    -- $timestamp
+    if var == "$timestamp" then
+        return tostring(os.time())
+    end
+
+    -- $uuid (v4)
+    if var == "$uuid" then
+        math.randomseed(os.time())
+        local template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
+        return (template:gsub("[xy]", function(c)
+            local v = (c == "x") and math.random(0, 15) or math.random(8, 11)
+            return string.format("%x", v)
+        end))
+    end
+
+    -- $randomInt [min max]
+    if var:match("^%$randomInt") then
+        math.randomseed(os.time())
+        local min_s, max_s = var:match("^%$randomInt%s+(%d+)%s+(%d+)$")
+        if min_s and max_s then
+            return tostring(math.random(tonumber(min_s), tonumber(max_s)))
+        end
+        return tostring(math.random(1, 1000))
+    end
+
+    return nil
+end
+
 M.replace_placeholders = function(request, env)
     local function replace(str)
         if str == nil then
             return nil
         end
         return (str:gsub("{{(.-)}}", function(var)
-            return env[var] or environment.get_global_variable(var) or "{{" .. var .. "}}"
+            return resolve_dynamic(var) or env[var] or environment.get_global_variable(var) or "{{" .. var .. "}}"
         end))
     end
 

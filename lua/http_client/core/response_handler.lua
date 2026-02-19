@@ -69,7 +69,26 @@ local function create_sandbox(response)
             body = response.body or {},
             headers = create_headers_object(response.headers),
             status = response.status or nil
-        }
+        },
+        -- Standard Lua libraries (safe subset for response handler scripts)
+        os = {
+            time  = os.time,
+            date  = os.date,
+            clock = os.clock,
+        },
+        math     = math,
+        string   = string,
+        table    = table,
+        tostring = tostring,
+        tonumber = tonumber,
+        type     = type,
+        pairs    = pairs,
+        ipairs   = ipairs,
+        next     = next,
+        select   = select,
+        unpack   = table.unpack,
+        print    = print,
+        error    = error,
     }
 end
 
