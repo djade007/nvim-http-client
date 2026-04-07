@@ -29,12 +29,12 @@ M.load_env = function()
     local env_data = file_utils.read_json_file(current_env_file)
     if not env_data then return end
 
-    current_env = env_data['*default'] or {}
+    current_env = env_data['dev'] or {}
 
     if current_private_env_file then
         local private_env_data = file_utils.read_json_file(current_private_env_file)
-        if private_env_data and private_env_data['*default'] then
-            current_env = vim.tbl_deep_extend('force', current_env, private_env_data['*default'])
+        if private_env_data and private_env_data['dev'] then
+            current_env = vim.tbl_deep_extend('force', current_env, private_env_data['dev'])
         end
     end
 end
@@ -55,8 +55,8 @@ M.set_env = function(env_name)
     current_env = {}
 
     -- Merge default environment if it exists
-    if env_data['*default'] then
-        current_env = vim.tbl_deep_extend('force', current_env, env_data['*default'])
+    if env_data['dev'] then
+        current_env = vim.tbl_deep_extend('force', current_env, env_data['dev'])
     end
 
     -- Merge selected environment
@@ -69,8 +69,8 @@ M.set_env = function(env_name)
         local private_env_data = file_utils.read_json_file(current_private_env_file)
         if private_env_data then
             -- Merge private default environment if it exists
-            if private_env_data['*default'] then
-                current_env = vim.tbl_deep_extend('force', current_env, private_env_data['*default'])
+            if private_env_data['dev'] then
+                current_env = vim.tbl_deep_extend('force', current_env, private_env_data['dev'])
             end
             -- Merge private selected environment if it exists
             if private_env_data[env_name] then

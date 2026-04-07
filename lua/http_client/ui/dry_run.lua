@@ -1,14 +1,7 @@
 local M = {}
 local environment = require('http_client.core.environment')
 local curl_generator = require('http_client.core.curl_generator')
-
-local function format_headers(headers)
-    local formatted = {}
-    for k, v in pairs(headers or {}) do
-        table.insert(formatted, string.format("%s: %s", k, v))
-    end
-    return table.concat(formatted, "\n")
-end
+local format = require('http_client.utils.format')
 
 
 M.display_dry_run = function(http_client)
@@ -72,7 +65,7 @@ Current request:
         request.url,
         request.http_version or "HTTP/1.1",
         request.status or "N/A",
-        format_headers(request.headers),
+        format.headers(request.headers),
         request.body or "No body",
         curl_command,
         env_file,

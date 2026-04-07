@@ -16,23 +16,38 @@ M.get_project_root = function()
     return M.project_root
 end
 
+-- Convert a simple glob pattern (supporting `*` and literal `.`) into a Lua
+-- pattern anchored to the end of the string. Only the characters used by
+-- current callers (`*.env.json`, `*.json`) need to be supported.
+local function glob_to_lua_pattern(glob)
+    local lua_pattern = glob:gsub('[%^%$%(%)%%%.%[%]%+%-%?]', function(ch)
+        if ch == '.' then
+            return '%.'
+        end
+        return '%' .. ch
+    end)
+    lua_pattern = lua_pattern:gsub('%*', '.*')
+    return lua_pattern .. '$'
+end
+
 M.find_files = function(pattern, project_root)
     local search_root = project_root or M.project_root
-    
-    local handle = io.popen('find "' .. search_root .. '" -name "' .. pattern .. '"')
-    local result = handle:read("*a")
-    handle:close()
+    local lua_pattern = glob_to_lua_pattern(pattern)
+
+    local matches = vim.fs.find(function(name, _)
+        return name:match(lua_pattern) ~= nil and not name:match('%.private%.')
+    end, {
+        path = search_root,
+        type = 'file',
+        limit = math.huge,
+    })
 
     local files = {}
-    for file in result:gmatch("[^\r\n]+") do
-        -- Remove the search root prefix from the file path
-        local filename = file:sub(#search_root + 2) -- +2 to remove the '/' after the root
-        -- Exclude files with ".private." in their name
-        if not filename:match("%.private%.") then
-            table.insert(files, filename)
-        end
+    for _, abs_path in ipairs(matches) do
+        local rel = vim.fs.relpath(search_root, abs_path) or abs_path
+        table.insert(files, rel)
     end
-    
+
     return files
 end
 

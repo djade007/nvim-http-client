@@ -7,12 +7,15 @@ CONTENTS                                              *http_client-contents*
 2. Commands ............. |http_client-commands|
 3. Keybindings .......... |http_client-keybindings|
 4. Configuration ........ |http_client-configuration|
-5. Telescope Integration  |http_client-telescope|
-6. HTTP Versions ........ |http_client-http-versions|
-7. SSL Configuration ... |http_client-ssl-config|
-8. Environment Files ... |http_client-environment-files|
-9. Response Handlers ... |http_client-response-handlers|
-10. Global Variables ... |http_client-global-variables|
+5. Request Lifecycle .... |http_client-request-lifecycle|
+6. Response Buffer ...... |http_client-response-buffer|
+7. Statusline ........... |http_client-statusline|
+8. Telescope Integration  |http_client-telescope|
+9. HTTP Versions ........ |http_client-http-versions|
+10. SSL Configuration ... |http_client-ssl-config|
+11. Environment Files ... |http_client-environment-files|
+12. Response Handlers ... |http_client-response-handlers|
+13. Global Variables .... |http_client-global-variables|
 
 ==============================================================================
 USAGE                                                    *http_client-usage*
@@ -34,10 +37,16 @@ COMMANDS                                              *http_client-commands*
     Set the current environment to use.
 
 :HttpRun                                                           *:HttpRun*
-    Run the HTTP request under the cursor.
+    Run the HTTP request under the cursor. A response buffer opens
+    immediately and shows a spinner until the request finishes; see
+    |http_client-request-lifecycle| for the full lifecycle. If a request
+    is already in flight when `:HttpRun` is invoked, the previous request
+    is automatically cancelled (with a `Cancelled previous request`
+    notification) and a fresh pending buffer is opened for the new request.
 
 :HttpStop                                                         *:HttpStop*
-    Stop the currently running HTTP request.
+    Stop the currently running HTTP request. The response buffer for that
+    request renders `⊘ CANCELLED` together with the elapsed time.
 
 :HttpVerbose                                                   *:HttpVerbose*
     Toggle verbose mode for debugging.
@@ -119,7 +128,10 @@ default_env_file                              *http_client-default_env_file*
     Default: '.env.json'
 
 request_timeout                               *http_client-request_timeout*
-    The timeout for HTTP requests in milliseconds.
+    The timeout for HTTP requests in milliseconds. This is enforced for
+    asynchronous requests via a deferred timer; on expiry the in-flight
+    request is aborted and the response buffer renders a timeout error
+    (see |http_client-request-lifecycle|).
     Default: 30000 (30 seconds)
 
 split_direction                                *http_client-split_direction*
@@ -130,6 +142,137 @@ split_direction                                *http_client-split_direction*
 keybindings                                      *http_client-config-keybindings*
     A table of keybindings for various plugin actions.
     See |http_client-keybindings| for more details on the available actions.
+
+------------------------------------------------------------------------------
+REQUEST LIFECYCLE                          *http_client-request-lifecycle*
+
+When `:HttpRun` is invoked, a response buffer opens immediately and shows
+the request method, URL, and a Braille spinner ticking at ~80ms:
+>
+    ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏
+<
+The buffer transitions through several stages while the request is in
+flight:
+
+  - At dispatch the buffer reads `Sending <METHOD> <URL>` next to the
+    spinner.
+  - After 500ms an elapsed-time counter is appended (e.g. `0.8s`).
+  - After 3 seconds the wording changes from `Sending` to `Still sending`.
+  - After 10 seconds the wording changes to `Still waiting on`.
+
+The same buffer renders one of four terminal states:
+
+  Success    The spinner is replaced by the rendered response (status
+             line, headers, body).
+
+  Error      For curl/transport failures the buffer renders
+             `✗ ERROR (curl exit N)` followed by the verbatim curl
+             stderr. No `E5108` Lua error notification is raised.
+
+  Timeout    If the request exceeds |http_client-request_timeout|
+             (default 30000ms) the buffer renders `⏱ TIMEOUT after Ns`
+             together with troubleshooting hints. The timeout is now
+             enforced for asynchronous requests via a deferred timer.
+
+  Cancelled  If `:HttpStop` is invoked, or `:HttpRun` is invoked again
+             while a request is in flight, the buffer renders
+             `⊘ CANCELLED` with the elapsed time.
+
+Cancel-and-replace: invoking `:HttpRun` while a request is already in
+flight automatically cancels the previous request (with a
+`Cancelled previous request` notification) and opens a fresh pending
+buffer for the new request. Previously this was a silent no-op.
+
+The buffer-history ring (default size 10) skips pending buffers when
+evicting, so a slow in-flight request can never be silently dropped.
+
+------------------------------------------------------------------------------
+RESPONSE BUFFER                              *http_client-response-buffer*
+
+The following keymaps are set in response buffers:
+
+  q          `:bdelete` the response buffer. This deletes the buffer
+  <Esc>      (rather than just closing the window) so that the cleanup
+             autocmd fires and any spinner timer attached to the buffer
+             is stopped.
+
+  x          Call `:HttpStop`, cancelling the in-flight request that
+             owns this buffer.
+
+  H          Navigate to the previous response in the history ring.
+  L          Navigate to the next response in the history ring.
+
+------------------------------------------------------------------------------
+STATUSLINE                                        *http_client-statusline*
+
+The plugin sets a buffer-local variable `b:http_client_status` on the
+source `.http` buffer that dispatched a request. Lualine and similar
+plugins can read this directly via `vim.b.http_client_status`.
+
+Possible values:
+
+  pending             A request from this buffer is currently in flight.
+
+  <status> <ms>ms     The request completed successfully (e.g. `200 342ms`).
+                      The `<ms>ms` portion is only present when profiling
+                      is enabled; otherwise the value is just the status
+                      code (e.g. `200`).
+
+  error               The request failed at the curl/transport layer.
+
+  timeout             The request exceeded |http_client-request_timeout|.
+
+  cancelled           The request was cancelled via `:HttpStop` or
+                      replaced by a subsequent `:HttpRun`.
+
+Example lualine snippet:
+>
+    require("lualine").setup({
+      sections = {
+        lualine_x = {
+          function() return vim.b.http_client_status or "" end,
+        },
+      },
+    })
+<
+
+POLISHED HELPER                                 *http_client.statusline*
+
+For a polished display with status glyphs (✓ 2xx/3xx, ! 4xx, ✗ 5xx,
+⏱ timeout, ⊘ cancelled, ⠋ pending), use the bundled helper:
+>
+    require("lualine").setup({
+      sections = {
+        lualine_x = {
+          require("http_client.statusline").component,
+        },
+      },
+    })
+<
+The helper exposes two functions:
+
+  `status({bufnr})`    Returns the polished string for {bufnr} (defaults
+                     to the current buffer). Returns an empty string when
+                     no request has run on that buffer.
+
+  `component()`        Drop-in lualine component callback. Reads the
+                     buffer of the window the statusline is being
+                     rendered for and returns the same polished string.
+
+Example values returned by `status()`:
+
+  `⠋ pending`           A request from this buffer is in flight.
+  `✓ 200 342ms`         Success (profiling enabled).
+  `✓ 200`               Success (profiling disabled).
+  `! 404 89ms`          HTTP 4xx client error.
+  `✗ 500 1.2s`          HTTP 5xx server error.
+  `✗ ERROR`             Transport/curl failure.
+  `⏱ TIMEOUT`           Exceeded |http_client-request_timeout|.
+  `⊘ CANCELLED`         Cancelled via `:HttpStop` or replaced by a new run.
+
+The raw `b:http_client_status` variable is still available if you want
+to roll your own formatting.
+
 
 ------------------------------------------------------------------------------
 TELESCOPE INTEGRATION                        *http_client-telescope*
@@ -196,13 +339,13 @@ Environment files (.env.json) allow you to define different sets of variables
 for your HTTP requests. The plugin will look for these files in your project
 root directory.
 
-The "*default" environment is used as a base, and other environments will
+The "dev" environment is the default base, and other environments will
 override its values.
 
 Example .env.json file:
 >
     {
-        "*default": {
+        "dev": {
             "host": "http://localhost:3000"
         },
         "production": {

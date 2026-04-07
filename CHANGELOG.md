@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+### Added
+* Loading state for in-flight requests:
+  * A response buffer now opens immediately on `:HttpRun` and shows the method, URL, and a Braille spinner (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`) ticking at ~80ms.
+  * Elapsed time appears after 500ms (e.g. `0.8s`).
+  * After 3 seconds the wording changes from `Sending` to `Still sending`.
+  * After 10 seconds the wording changes to `Still waiting on`.
+  * On success, the spinner is replaced by the rendered response in the same buffer.
+* Statusline integration:
+  * The plugin sets a buffer-local variable `b:http_client_status` on the source `.http` buffer.
+  * Values: `pending` while in flight, `<status> <ms>ms` on success (the `<ms>ms` portion is only present when profiling is enabled), `error`, `timeout`, or `cancelled` for failure modes.
+  * Lualine and similar plugins can read this directly via `vim.b.http_client_status`.
+* New `x` keymap in the response buffer that calls `:HttpStop`.
+
+### Changed
+* Error handling for in-flight requests now renders into the response buffer:
+  * Curl/transport errors render `✗ ERROR (curl exit N)` plus the verbatim curl stderr in the same buffer instead of surfacing as a red `E5108` Lua error notification.
+  * Timeouts render `⏱ TIMEOUT after Ns` with troubleshooting hints in the same buffer.
+  * `:HttpStop` renders `⊘ CANCELLED` with the elapsed time in the same buffer.
+* Cancel-and-replace policy for `:HttpRun`:
+  * Triggering `:HttpRun` while a request is already in flight now automatically cancels the previous request (with a `Cancelled previous request` notification) and opens a fresh pending buffer for the new request, instead of silently doing nothing.
+* Response buffer keymaps:
+  * `q` and `<Esc>` now `:bdelete` the response buffer instead of `:close`-ing the window. This lets the cleanup autocmd fire and stops any spinner timer attached to that buffer.
+  * `H` / `L` for history navigation are unchanged.
+* Buffer history (`MAX_BUFFERS=10`) now skips pending buffers when evicting, so a slow in-flight request can never be silently dropped from the ring.
+
+### Fixed
+* `request_timeout` (default 30000ms) is now actually enforced for asynchronous requests. Previously the option was documented and present in `config.lua` but plenary's curl ignored `opts.timeout` on the async path, leaving the value inert. Expiry now produces the timeout error buffer described above.
+
 ## [1.4.4] 2025-09-10
 ### Added
 * Project root management for file searching operations:

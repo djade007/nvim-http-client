@@ -12,7 +12,7 @@ An environment file has the following structure:
 
 ```json
 {
-    "*default": {
+    "dev": {
         "host": "http://localhost:3000",
         "apiKey": "dev-api-key"
     },
@@ -27,8 +27,8 @@ An environment file has the following structure:
 }
 ```
 
-- The `*default` environment is special and is used as a base environment.
-- When you select an environment (e.g., "production"), it will inherit values from `*default` and then override them with the environment-specific values.
+- The `dev` environment is the default and is used as a base environment.
+- When you select another environment (e.g., "production"), it will inherit values from `dev` and then override them with the environment-specific values.
 
 ### Private Environment Files
 
@@ -36,7 +36,7 @@ For sensitive information, you can create a private environment file named `.pri
 
 ```json
 {
-    "*default": {
+    "dev": {
         "username": "admin",
         "password": "secret"
     },

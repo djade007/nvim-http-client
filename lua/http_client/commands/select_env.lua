@@ -4,7 +4,8 @@ local environment = require('http_client.core.environment')
 local file_utils = require('http_client.utils.file_utils')
 
 M.select_env_file = function(config)
-    local files = file_utils.find_files('*.env.json')
+    local current_dir = vim.fn.expand('%:p:h')
+    local files = file_utils.find_files('*.env.json', current_dir)
     local default_file = config.default_env_file or '.env.json'
     local default_index = nil
 
@@ -21,7 +22,7 @@ M.select_env_file = function(config)
         default = default_index
     }, function(choice)
         if choice then
-            environment.set_env_file(choice)
+            environment.set_env_file(vim.fs.joinpath(current_dir, choice))
             print('\n\nEnvironment file set to: ' .. choice)
             -- Automatically select environment after file selection
             M.select_env()
@@ -41,26 +42,26 @@ M.select_env = function()
         return
     end
 
-    -- Set *default environment first
-    local success = environment.set_env('*default')
+    -- Set dev environment first
+    local success = environment.set_env('dev')
     if success then
-        print('\nEnvironment set to: *default')
+        print('\nEnvironment set to: dev')
     else
         print('\nFailed to set default environment')
         return
     end
 
-    local env_names = { '*default' }
+    local env_names = { 'dev' }
     for name, _ in pairs(env_data) do
-        if name ~= '*default' then
+        if name ~= 'dev' then
             table.insert(env_names, name)
         end
     end
 
     vim.ui.select(env_names, {
-        prompt = 'Select environment (current: *default):',
+        prompt = 'Select environment (current: dev):',
     }, function(choice)
-        if choice and choice ~= '*default' then
+        if choice and choice ~= 'dev' then
             local success = environment.set_env(choice)
             if success then
                 print('\nEnvironment set to: ' .. choice)

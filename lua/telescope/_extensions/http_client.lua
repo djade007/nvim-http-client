@@ -55,9 +55,9 @@ http_envs = function(opts)
         return
     end
 
-    local results = { "*default" }
+    local results = { "dev" }
     for name, _ in pairs(env_data) do
-        if name ~= "*default" then
+        if name ~= "dev" then
             table.insert(results, name)
         end
     end
@@ -97,7 +97,8 @@ end
 
 local http_env_files = function(opts)
     opts = opts or {}
-    local results = http_client.file_utils.find_files('*.env.json')
+    local current_dir = vim.fn.expand('%:p:h')
+    local results = http_client.file_utils.find_files('*.env.json', current_dir)
 
     pickers.new(opts, {
         prompt_title = "HTTP Environment Files",
@@ -105,7 +106,7 @@ local http_env_files = function(opts)
             results = results,
             entry_maker = function(entry)
                 return {
-                    value = entry,
+                    value = vim.fs.joinpath(current_dir, entry),
                     display = entry,
                     ordinal = entry,
                 }

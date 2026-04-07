@@ -3,8 +3,10 @@ local curl = require('plenary.curl')
 local vvv = require('http_client.utils.verbose')
 local state = require('http_client.state')
 local profiling = require('http_client.utils.profiling')
+local display = require('http_client.ui.display')
 
-local current_request = nil
+-- { request, job, timeout_timer } | nil
+local inflight = nil
 
 local function detect_content_type(headers)
     local content_type
@@ -46,134 +48,12 @@ local function clean_invalid_escapes(json_str)
     return json_str
 end
 
-local function is_list(t)
-    if type(t) ~= "table" then return false end
-    local i = 0
-    for _ in pairs(t) do
-        i = i + 1
-        if t[i] == nil then return false end
-    end
-    return true
-end
-
-local function format_json(body)
-    local cleaned_body = clean_invalid_escapes(body)
-    local ok, parsed = pcall(vim.json.decode, cleaned_body)
-    if not ok then
-        return "{}" -- Always return valid JSON
-    end
-    -- Always re-encode to ensure valid JSON
-    local ok2, encoded = pcall(vim.json.encode, parsed)
-    if ok2 then
-        return encoded
-    else
-        return "{}"
-    end
-end
-
-local function format_xml(body)
-    local indent = 0
-    local formatted = body:gsub("(<[^/!][^>]*>)", function(tag)
-        local result = string.rep("  ", indent) .. tag
-        if not tag:match("/>$") and not tag:match("</") then
-            indent = indent + 1
-        elseif tag:match("</") then
-            indent = indent - 1
-            result = string.rep("  ", indent) .. tag
-        end
-        return result
-    end)
-    return formatted
-end
-
-local function format_headers(headers)
-    local formatted = {}
-    for _, header in pairs(headers or {}) do
-        -- Match header in the form of "Key: Value" and insert it directly
-        local header_key, header_value = header:match("^(.-):%s*(.*)")
-        if header_key and header_value then
-            table.insert(formatted, string.format("%s: %s", header_key, header_value))
-        end
-    end
-    return table.concat(formatted, "\n")
-end
-
-local function prettify_json(json_str)
-    local ok, parsed = pcall(vim.json.decode, json_str)
-    if not ok then
-        return json_str -- fallback to original if not valid JSON
-    end
-    local function encode_pretty(val, indent)
-        indent = indent or ""
-        local next_indent = indent .. "  "
-        if type(val) == "table" then
-            local is_array = is_list(val)
-            local items = {}
-            if is_array then
-                for _, v in ipairs(val) do
-                    table.insert(items, encode_pretty(v, next_indent))
-                end
-                return "[\n" .. next_indent .. table.concat(items, ",\n" .. next_indent) .. "\n" .. indent .. "]"
-            else
-                for k, v in pairs(val) do
-                    table.insert(items, string.format('%q: %s', k, encode_pretty(v, next_indent)))
-                end
-                return "{\n" .. next_indent .. table.concat(items, ",\n" .. next_indent) .. "\n" .. indent .. "}"
-            end
-        elseif val == vim.NIL then
-            return "null"
-        elseif type(val) == "string" then
-            return string.format('%q', val)
-        elseif type(val) == "boolean" then
-            return tostring(val)
-        else
-            return tostring(val)
-        end
-    end
-    return encode_pretty(parsed)
-end
-
-local function prettify_csv(csv_str)
-    -- Split lines
-    local lines = {}
-    for line in csv_str:gmatch("[^\r\n]+") do
-        table.insert(lines, line)
-    end
-    -- Split columns and find max width for each column
-    local columns = {}
-    for i, line in ipairs(lines) do
-        local row = {}
-        for cell in line:gmatch("([^,]+)") do
-            table.insert(row, vim.trim(cell))
-        end
-        columns[i] = row
-    end
-    local col_widths = {}
-    for _, row in ipairs(columns) do
-        for j, cell in ipairs(row) do
-            col_widths[j] = math.max(col_widths[j] or 0, #cell)
-        end
-    end
-    -- Build formatted string
-    local formatted = {}
-    for _, row in ipairs(columns) do
-        local cells = {}
-        for j, cell in ipairs(row) do
-            table.insert(cells, cell .. string.rep(' ', col_widths[j] - #cell))
-        end
-        table.insert(formatted, table.concat(cells, " | "))
-    end
-    return table.concat(formatted, "\n")
-end
-
 local function prepare_response(request, response)
     local content_type = detect_content_type(response.headers or {})
     local formatted_body = response.body or "No body"
 
     if content_type == "json" then
-        formatted_body = format_json(formatted_body)
-    elseif content_type == "xml" then
-        formatted_body = format_xml(formatted_body)
+        formatted_body = clean_invalid_escapes(formatted_body)
     end
 
     local pr = {
@@ -189,61 +69,14 @@ local function prepare_response(request, response)
             test_name = request.test_name or "N/A",
         },
         request_id = request.request_id,
-        timing_metrics = response.timing_metrics or {}
+        timing_metrics = response.timing_metrics or {},
     }
 
+    -- store_response deepcopies pr; the ui table contains a uv timer handle that
+    -- vim.deepcopy can't copy, so callers attach pr.ui *after* this returns.
     state.store_response(pr)
 
     return pr
-end
-
-local function display_response(pr)
-    local ui = require('http_client.ui.display')
-    local config = require('http_client.config')
-
-    -- Format timing metrics if available
-    local timing_str = ""
-    local profiling_config = config.get('profiling')
-    
-    if profiling_config and profiling_config.enabled and profiling_config.show_in_response then
-        if pr.timing_metrics and next(pr.timing_metrics) then
-            timing_str = "\n# Timing:\n" .. profiling.format_metrics(pr.timing_metrics)
-        end
-    end
-
-    local formatted_body = pr.formatted_body
-    if pr.content_type == "json" then
-        formatted_body = prettify_json(pr.formatted_body)
-    elseif pr.content_type == "xml" then
-        formatted_body = format_xml(pr.formatted_body)
-    elseif pr.content_type == "csv" then
-        -- formatted_body = prettify_csv(pr.formatted_body)
-    end
-
-    local content = string.format([[
-Response Information (%s):
----------------------
-%s %s %s
-# Status: %s
-
-# Headers:
-%s%s
-
-# Body (%s):
-%s
-]],
-        pr.request.test_name,
-        pr.request.method,
-        pr.request.url,
-        pr.request.http_version,
-        pr.status,
-        format_headers(pr.headers),
-        timing_str,
-        pr.content_type,
-        formatted_body
-    )
-
-    ui.display_in_buffer(content, "HTTP Response")
 end
 
 local function handle_response(pr)
@@ -269,45 +102,129 @@ local function handle_response(pr)
     end
 end
 
+local function profiling_enabled()
+    local profiling_config = require('http_client.config').get('profiling')
+    return profiling_config and profiling_config.enabled
+end
+
+local function stop_timeout(timer)
+    if timer and not timer:is_closing() then
+        timer:stop()
+        timer:close()
+    end
+end
+
+-- Tear down the current inflight slot. Stops the timeout timer, clears
+-- metrics, and (if requested) shuts down the curl job. Returns nothing —
+-- callers that needed the request/job already captured them.
+local function teardown_inflight(shutdown_job)
+    if not inflight then return end
+    local req = inflight.request
+    local job = inflight.job
+    stop_timeout(inflight.timeout_timer)
+    inflight = nil
+
+    if req.request_id then
+        pcall(profiling.clear_metrics, req.request_id)
+    end
+    if shutdown_job and job and not job.is_shutdown then
+        pcall(function() job:shutdown() end)
+    end
+end
+
+local function cancel_inflight(reason)
+    if not inflight then return end
+    local req = inflight.request
+    teardown_inflight(true)
+
+    -- Synchronous render: callers (send_request cancel-and-replace, stop_request,
+    -- the timeout timer) all run on the main thread, so we don't need to schedule.
+    -- Doing it sync also avoids a race where the next request's "pending" status
+    -- briefly gets overwritten by the deferred "cancelled".
+    display.show_cancelled(req)
+
+    if reason then
+        vim.notify("[http_client] " .. reason, vim.log.levels.INFO)
+    end
+end
+
+local function finalize_success(request, response)
+    if not inflight or inflight.request.request_id ~= request.request_id then
+        return
+    end
+    teardown_inflight(false)
+
+    if profiling_enabled() then
+        profiling.end_metric(request.request_id, "total")
+        response.timing_metrics = profiling.get_metrics(request.request_id)
+        response.timing_metrics.url = request.url
+    end
+
+    vvv.debug_print("Response received")
+    if vvv.get_verbose_mode() then
+        vvv.debug_print(string.format("Status: %s", response.status))
+        if response.headers then
+            vvv.debug_print("Response headers:")
+            for k, v in pairs(response.headers) do
+                vvv.debug_print(string.format("  %s: %s", k, v))
+            end
+        end
+        vvv.debug_print("Response body:")
+        vvv.debug_print(response.body)
+    end
+
+    local pr = prepare_response(request, response)
+    -- prepare_response intentionally omits ui from pr because state.store_response
+    -- deepcopies the table and vim.deepcopy can't copy uv timer userdata.
+    pr.ui = request.ui
+
+    display.show_response(pr)
+    handle_response(pr)
+end
+
+local function finalize_error(request, err)
+    if not inflight or inflight.request.request_id ~= request.request_id then
+        return
+    end
+    teardown_inflight(false)
+    display.show_error(request, err)
+end
+
 M.send_request = function(request)
     vvv.debug_print("Sending request...")
     vvv.debug_print(string.format("Method: %s, URL: %s, HTTP Version: %s", request.method, request.url,
         request.http_version))
 
-    if current_request then
-        if current_request.is_shutdown or current_request.code then
-            current_request = nil
-        else
-            vvv.debug_print("A request is already in progress")
-            return
-        end
+    local request_timeout = require('http_client.config').get('request_timeout')
+    local profile = profiling_enabled()
+
+    if inflight then
+        cancel_inflight("Cancelled previous request")
     end
 
-    local config = require('http_client.config')
-    local profiling_config = config.get('profiling')
-    local profiling_enabled = profiling_config and profiling_config.enabled
-
-    -- Generate request ID and add it to the request object
     request.request_id = profiling.generate_request_id()
-    
-    if profiling_enabled then
-        profiling.start_metric(request.request_id, "total")
-    end
-
-    vvv.debug_print("Headers:")
-    for k, v in pairs(request.headers) do
-        vvv.debug_print(string.format("  %s: %s", k, v))
-    end
-
-    if request.body then
-        vvv.debug_print("Request body:")
-        vvv.debug_print(request.body)
-    else
-        vvv.debug_print("No request body")
-    end
+    display.show_pending(request)
 
     if not request.url:match("^https?://") then
         request.url = "http://" .. request.url
+    end
+
+    if vvv.get_verbose_mode() then
+        vvv.debug_print("Headers:")
+        for k, v in pairs(request.headers or {}) do
+            vvv.debug_print(string.format("  %s: %s", k, v))
+        end
+        if request.body then
+            vvv.debug_print("Request body:")
+            vvv.debug_print(request.body)
+        else
+            vvv.debug_print("No request body")
+        end
+    end
+
+    if profile then
+        profiling.start_metric(request.request_id, "total")
+        profiling.start_metric(request.request_id, "dns_resolution")
     end
 
     local curl_options = {
@@ -316,73 +233,52 @@ M.send_request = function(request)
         body = request.body,
         headers = request.headers,
         callback = function(response)
-            if profiling_enabled then
-                profiling.end_metric(request.request_id, "total")
-            end
-            
-            vvv.debug_print("Response received")
-            vvv.debug_print(string.format("Status: %s", response.status))
-            vvv.debug_print("Response headers:")
-            for k, v in pairs(response.headers) do
-                vvv.debug_print(string.format("  %s: %s", k, v))
-            end
-            vvv.debug_print("Response body:")
-            vvv.debug_print(response.body)
-
-            current_request = nil
-            
-            if profiling_enabled then
-                response.timing_metrics = profiling.get_metrics(request.request_id)
-                response.timing_metrics.url = request.url
-                profiling.clear_metrics(request.request_id)
-            end
-
-            vvv.debug_print("Calling ui.display_response")
-            local pr = prepare_response(request, response)
-            display_response(pr)
-            handle_response(pr)
-        end
+            vim.schedule(function()
+                finalize_success(request, response)
+            end)
+        end,
+        on_error = function(err)
+            vim.schedule(function()
+                finalize_error(request, {
+                    kind = "transport",
+                    message = err.message,
+                    stderr = err.stderr,
+                    exit = err.exit,
+                })
+            end)
+        end,
     }
 
-    -- Add event handlers only if profiling is enabled
-    if profiling_enabled then
+    if profile then
         curl_options.on_start = function()
             profiling.end_metric(request.request_id, "dns_resolution")
             profiling.start_metric(request.request_id, "connection")
         end
-        
+
         curl_options.on_connect = function()
             profiling.end_metric(request.request_id, "connection")
             profiling.start_metric(request.request_id, "send_request")
         end
-        
+
         curl_options.on_first_byte = function()
             profiling.end_metric(request.request_id, "send_request")
-            
-            -- Calculate server processing time
+
             local metrics = profiling.get_metrics(request.request_id)
-            local start_time = 0
-            
             if metrics.send_request and metrics.send_request.end_time then
-                start_time = metrics.send_request.end_time
-                
-                local server_metrics = {}
-                server_metrics.start_time = start_time
-                server_metrics.end_time = vim.loop.hrtime()
-                server_metrics.duration = (server_metrics.end_time - start_time) / 1000000
-                
-                metrics.server_processing = server_metrics
+                local start_time = metrics.send_request.end_time
+                metrics.server_processing = {
+                    start_time = start_time,
+                    end_time = vim.loop.hrtime(),
+                    duration = (vim.loop.hrtime() - start_time) / 1000000,
+                }
             end
-            
+
             profiling.start_metric(request.request_id, "content_transfer")
         end
     end
 
-    -- Handle different HTTP versions
     if request.http_version then
-        if request.http_version == "HTTP/2" then
-            curl_options.http_version = "HTTP/2"
-        elseif request.http_version == "HTTP/2 (Prior Knowledge)" then
+        if request.http_version == "HTTP/2" or request.http_version == "HTTP/2 (Prior Knowledge)" then
             curl_options.http_version = "HTTP/2"
         elseif request.http_version == "HTTP/1.1" then
             curl_options.http_version = "HTTP/1.1"
@@ -395,65 +291,118 @@ M.send_request = function(request)
     if ssl_config.verifyHostCertificate == false then
         curl_options.insecure = true
     end
-    
-    if profiling_enabled then
-        profiling.start_metric(request.request_id, "dns_resolution")
-    end
 
-    current_request = curl.request(curl_options)
-
-    if not current_request then
-        vvv.debug_print("Failed to initiate request")
-        if profiling_enabled then
-            profiling.clear_metrics(request.request_id)
-        end
+    local job = curl.request(curl_options)
+    if not job then
+        display.show_error(request, { kind = "transport", message = "Failed to dispatch request", exit = -1 })
         return
     end
+
+    -- plenary's async path ignores opts.timeout entirely (curl.lua:322-324),
+    -- so we enforce request_timeout ourselves with vim.defer_fn.
+    local timeout_timer = vim.defer_fn(function()
+        if inflight and inflight.request.request_id == request.request_id then
+            if inflight.job and not inflight.job.is_shutdown then
+                pcall(function() inflight.job:shutdown() end)
+            end
+            finalize_error(request, { kind = "timeout", message = "Request timed out" })
+        end
+    end, request_timeout)
+
+    inflight = { request = request, job = job, timeout_timer = timeout_timer }
 
     vvv.debug_print("Request sent, waiting for response...")
 end
 
 M.stop_request = function()
-    if current_request then
-        print("Stopping current request")
-        current_request:shutdown()
-        current_request = nil
-    else
-        print("No active request to stop")
+    if not inflight then
+        vim.notify("[http_client] No active request to stop", vim.log.levels.INFO)
+        return
     end
+    cancel_inflight()
 end
 
 M.clear_current_request = function()
-    current_request = nil
+    teardown_inflight(false)
 end
 
 M.get_current_request = function()
-    return current_request
+    return inflight and inflight.job or nil
 end
 
-M.send_request_sync = function(request)
-    local config = require('http_client.config')
-    local profiling_config = config.get('profiling')
-    local profiling_enabled = profiling_config and profiling_config.enabled
-    
+-- Parallel-friendly dispatch used by :HttpRunAll. Unlike M.send_request:
+--   * does NOT touch the inflight slot (multiple unmanaged requests can run
+--     concurrently without cancelling each other)
+--   * does NOT render per-request pending/response UI (the caller renders a
+--     single summary buffer when the whole batch finishes)
+--   * does NOT enforce request_timeout — callers can layer that in if needed;
+--     for run_all we rely on plenary's network defaults to keep things simple
+-- Calls on_done(ok, pr_or_err) exactly once:
+--   * on success: ok = true,  pr_or_err = pr (the prepared response)
+--   * on failure: ok = false, pr_or_err = err table { message, stderr, exit }
+M.send_request_unmanaged = function(request, on_done)
+    local profile = profiling_enabled()
+
     request.request_id = profiling.generate_request_id()
-    
-    if profiling_enabled then
+
+    if not request.url:match("^https?://") then
+        request.url = "http://" .. request.url
+    end
+
+    if profile then
         profiling.start_metric(request.request_id, "total")
     end
-    
-    local response = {}
+
+    local done = false
+    local function settle(ok, value)
+        if done then return end
+        done = true
+        on_done(ok, value)
+    end
+
+    local function finish_success(response)
+        if profile then
+            profiling.end_metric(request.request_id, "total")
+            response.timing_metrics = profiling.get_metrics(request.request_id)
+            response.timing_metrics.url = request.url
+        end
+        local pr = prepare_response(request, response)
+        handle_response(pr)
+        if profile then
+            pcall(profiling.clear_metrics, request.request_id)
+        end
+        settle(true, pr)
+    end
+
+    local function finish_error(err)
+        if profile then
+            pcall(profiling.clear_metrics, request.request_id)
+        end
+        settle(false, err)
+    end
+
     local curl_options = {
         url = request.url,
         method = request.method,
         body = request.body,
         headers = request.headers,
+        callback = function(response)
+            vim.schedule(function() finish_success(response) end)
+        end,
+        on_error = function(err)
+            vim.schedule(function()
+                finish_error({
+                    kind = "transport",
+                    message = err and err.message,
+                    stderr = err and err.stderr,
+                    exit = err and err.exit,
+                })
+            end)
+        end,
     }
 
     if request.http_version then
-        if request.http_version == "HTTP/2" then
-            curl_options.http_version = "HTTP/2"
-        elseif request.http_version == "HTTP/2 (Prior Knowledge)" then
+        if request.http_version == "HTTP/2" or request.http_version == "HTTP/2 (Prior Knowledge)" then
             curl_options.http_version = "HTTP/2"
         elseif request.http_version == "HTTP/1.1" then
             curl_options.http_version = "HTTP/1.1"
@@ -465,23 +414,20 @@ M.send_request_sync = function(request)
         curl_options.insecure = true
     end
 
-    response = curl.get(curl_options)
-    
-    if profiling_enabled then
-        profiling.end_metric(request.request_id, "total")
-        response.timing_metrics = profiling.get_metrics(request.request_id)
-        response.timing_metrics.url = request.url
+    local ok, job = pcall(curl.request, curl_options)
+    if not ok or not job then
+        vim.schedule(function()
+            finish_error({
+                kind = "transport",
+                message = "Failed to dispatch request" .. ((not ok and job) and (": " .. tostring(job)) or ""),
+                exit = -1,
+            })
+        end)
     end
-    
-    local pr = prepare_response(request, response)
-    handle_response(pr)
-    
-    if profiling_enabled then
-        profiling.clear_metrics(request.request_id)
-    end
-
-    return response
 end
 
-return M
+-- Test seam: prepare_response is file-local but the deepcopy regression test
+-- needs to drive it directly without going through curl.
+M._prepare_response = prepare_response
 
+return M
