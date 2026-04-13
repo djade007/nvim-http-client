@@ -1,80 +1,95 @@
 local M = {}
 local file_utils = require('http_client.utils.file_utils')
 
-local current_env_file = nil
-local current_private_env_file = nil
-local current_env = {}
+-- Per-buffer environment state: bufnr -> { env_file, private_env_file, env }
+local buf_envs = {}
 local global_variables = {}
 
-M.set_env_file = function(file_path)
+local function resolve_bufnr(bufnr)
+    return (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
+end
+
+local function get_buf_state(bufnr)
+    bufnr = resolve_bufnr(bufnr)
+    if not buf_envs[bufnr] then
+        buf_envs[bufnr] = { env_file = nil, private_env_file = nil, env = {}, env_name = nil }
+    end
+    return buf_envs[bufnr]
+end
+
+-- Clean up state when a buffer is wiped.
+vim.api.nvim_create_autocmd('BufWipeout', {
+    callback = function(ev) buf_envs[ev.buf] = nil end,
+})
+
+M.set_env_file = function(file_path, bufnr)
     -- If the path is relative, make it absolute using the project root
     if not file_path:match("^/") then
         file_path = file_utils.get_project_root() .. "/" .. file_path
     end
 
-    current_env_file = file_path
+    local state = get_buf_state(bufnr)
+    state.env_file = file_path
     -- Set the private environment file path
-    current_private_env_file = file_path:gsub("%.env%.json$", ".private.env.json")
+    state.private_env_file = file_path:gsub("%.env%.json$", ".private.env.json")
 
     -- Check if the private file exists
-    if vim.fn.filereadable(current_private_env_file) ~= 1 then
-        current_private_env_file = nil
+    if vim.fn.filereadable(state.private_env_file) ~= 1 then
+        state.private_env_file = nil
     end
-    M.load_env()
+    M.load_env(bufnr)
 end
 
-M.load_env = function()
-    if not current_env_file then return end
+M.load_env = function(bufnr)
+    local state = get_buf_state(bufnr)
+    if not state.env_file then return end
 
-    local env_data = file_utils.read_json_file(current_env_file)
-    if not env_data then return end
-
-    current_env = env_data['dev'] or {}
-
-    if current_private_env_file then
-        local private_env_data = file_utils.read_json_file(current_private_env_file)
-        if private_env_data and private_env_data['dev'] then
-            current_env = vim.tbl_deep_extend('force', current_env, private_env_data['dev'])
-        end
+    if state.env_name then
+        M.set_env(state.env_name, bufnr)
+    else
+        M.set_env('dev', bufnr)
     end
 end
 
-M.set_env = function(env_name)
-    if not current_env_file then
+M.set_env = function(env_name, bufnr)
+    local state = get_buf_state(bufnr)
+    if not state.env_file then
         print('No environment file selected')
         return false
     end
 
-    local env_data = file_utils.read_json_file(current_env_file)
+    local env_data = file_utils.read_json_file(state.env_file)
     if not env_data then
         print('Failed to read environment file')
         return false
     end
 
+    state.env_name = env_name
+
     -- Start with an empty environment
-    current_env = {}
+    state.env = {}
 
     -- Merge default environment if it exists
     if env_data['dev'] then
-        current_env = vim.tbl_deep_extend('force', current_env, env_data['dev'])
+        state.env = vim.tbl_deep_extend('force', state.env, env_data['dev'])
     end
 
     -- Merge selected environment
     if env_data[env_name] then
-        current_env = vim.tbl_deep_extend('force', current_env, env_data[env_name])
+        state.env = vim.tbl_deep_extend('force', state.env, env_data[env_name])
     end
 
     -- Merge with private environment if it exists
-    if current_private_env_file then
-        local private_env_data = file_utils.read_json_file(current_private_env_file)
+    if state.private_env_file then
+        local private_env_data = file_utils.read_json_file(state.private_env_file)
         if private_env_data then
             -- Merge private default environment if it exists
             if private_env_data['dev'] then
-                current_env = vim.tbl_deep_extend('force', current_env, private_env_data['dev'])
+                state.env = vim.tbl_deep_extend('force', state.env, private_env_data['dev'])
             end
             -- Merge private selected environment if it exists
             if private_env_data[env_name] then
-                current_env = vim.tbl_deep_extend('force', current_env, private_env_data[env_name])
+                state.env = vim.tbl_deep_extend('force', state.env, private_env_data[env_name])
             end
         end
     end
@@ -82,21 +97,25 @@ M.set_env = function(env_name)
     return true
 end
 
-M.get_current_env = function()
-    return vim.tbl_deep_extend('force', {}, current_env, global_variables)
+M.get_current_env = function(bufnr)
+    local state = get_buf_state(bufnr)
+    return vim.tbl_deep_extend('force', {}, state.env, global_variables)
 end
 
-M.get_current_env_file = function()
-    return current_env_file
+M.get_current_env_file = function(bufnr)
+    local state = get_buf_state(bufnr)
+    return state.env_file
 end
 
-M.get_current_private_env_file = function()
-    return current_private_env_file
+M.get_current_private_env_file = function(bufnr)
+    local state = get_buf_state(bufnr)
+    return state.private_env_file
 end
 
-M.get_ssl_config = function()
-    if current_env and current_env.SSLConfiguration then
-        return current_env.SSLConfiguration
+M.get_ssl_config = function(bufnr)
+    local state = get_buf_state(bufnr)
+    if state.env and state.env.SSLConfiguration then
+        return state.env.SSLConfiguration
     end
     return {}
 end

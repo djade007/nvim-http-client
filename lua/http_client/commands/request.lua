@@ -4,11 +4,20 @@ local vvv = require('http_client.utils.verbose')
 local parser = require('http_client.core.parser')
 local environment = require('http_client.core.environment')
 local http_client = require('http_client.core.http_client')
+local select_env = require('http_client.commands.select_env')
+local config = require('http_client.config')
 
+--- Prompt for env file or env selection, then call on_done.
+local function prompt_for_env(bufnr, on_done)
+    if not environment.get_current_env_file(bufnr) then
+        select_env.select_env_file(config.options, bufnr, on_done)
+    else
+        select_env.select_env(bufnr, on_done)
+    end
+end
 
 M.run_request = function()
     local verbose = vvv.get_verbose_mode()
-    vvv.set_verbose_mode(verbose)
 
     local request = parser.get_request_under_cursor()
     if not request then
@@ -24,9 +33,9 @@ M.run_request = function()
     local env_needed = environment.env_variables_needed(request)
 
     if env_needed and not next(env) then
-        print(
-            'Environment variables are needed but not set. Please select an environment file or set properties via response handler.'
-        )
+        prompt_for_env(vim.api.nvim_get_current_buf(), function()
+            M.run_request()
+        end)
         return
     end
 
@@ -62,7 +71,6 @@ end
 
 M.run_all = function()
     local verbose = vvv.get_verbose_mode()
-    vvv.set_verbose_mode(verbose)
 
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     local requests = parser.parse_all_requests(lines)
@@ -71,6 +79,18 @@ M.run_all = function()
     if #requests == 0 then
         vim.notify("[http_client] No requests found in buffer", vim.log.levels.WARN)
         return
+    end
+
+    -- If any request needs env vars but none are set, prompt first then retry.
+    if not next(env) then
+        for _, req in ipairs(requests) do
+            if environment.env_variables_needed(req) then
+                prompt_for_env(vim.api.nvim_get_current_buf(), function()
+                    M.run_all()
+                end)
+                return
+            end
+        end
     end
 
     local results = {}
