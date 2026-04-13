@@ -182,7 +182,6 @@ local function create_response_buffer()
     vim.bo[buf].swapfile = false
     vim.bo[buf].bufhidden = 'hide'
     vim.bo[buf].filetype = 'http_response'
-    vim.bo[buf].readonly = true
 
     -- q / <Esc> use :bdelete (not :close) so BufWipeout fires and spinner cleanup runs.
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bdelete<CR>', { noremap = true, silent = true })
@@ -245,6 +244,7 @@ local function create_response_win()
     local current_win = vim.api.nvim_get_current_win()
     vim.cmd(split_cmd)
     response_win = vim.api.nvim_get_current_win()
+    vim.wo[response_win].wrap = true
     vim.api.nvim_set_current_win(current_win)
 
     return response_win

@@ -7,7 +7,7 @@ M.defaults = {
     create_keybindings = true,
     user_agent = "heilgar/nvim-http-client", -- Default User-Agent header
     profiling = {
-        enabled = true,
+        enabled = false,
         show_in_response = true,
         detailed_metrics = true,
     },
