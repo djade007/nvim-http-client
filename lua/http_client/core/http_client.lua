@@ -40,8 +40,6 @@ local function detect_content_type(headers)
     return "text"
 end
 
-local file_utils = require('http_client.utils.file_utils')
-
 local function clean_invalid_escapes(json_str)
     -- Remove octal/decimal escapes like \13
     json_str = json_str:gsub("\\%d%d?%d?", "")
@@ -92,6 +90,57 @@ local function ensure_extension(filename, content_type)
         text = ".txt",
     }
     return filename .. (ext_map[content_type] or ".bin")
+end
+
+local uv = vim.uv or vim.loop
+
+local function resolve_download_output_path(request)
+    if request.download_path ~= nil then
+        if request.download_path ~= "" then
+            return request.download_path
+        else
+            return os.tmpname()
+        end
+    end
+    return nil
+end
+
+local function finalize_download(request, response, pr, output_path)
+    local filename
+    if request.download_path ~= "" then
+        filename = request.download_path
+    else
+        filename = derive_download_filename(request, response)
+        filename = ensure_extension(filename, pr.content_type)
+        if filename ~= output_path then
+            local ok_rename, err_rename = pcall(function()
+                uv.fs_rename(output_path, filename)
+            end)
+            if not ok_rename then
+                filename = output_path
+                vim.notify("[http_client] Download rename failed: " .. tostring(err_rename), vim.log.levels.WARN)
+            end
+        end
+    end
+
+    local stat = uv.fs_stat(filename)
+    local size = stat and stat.size or 0
+
+    -- Populate raw_body from the written file so response handlers can inspect it.
+    if pr.response_handler then
+        local fd = io.open(filename, "rb")
+        if fd then
+            pr.raw_body = fd:read("*a")
+            fd:close()
+        else
+            pr.raw_body = ""
+        end
+    end
+
+    pr.formatted_body = string.format("Downloaded to: %s\nSize: %d bytes", filename, size)
+    pr.download_filename = filename
+
+    vim.notify(string.format("[http_client] Downloaded to %s (%d bytes)", filename, size), vim.log.levels.INFO)
 end
 
 local function prepare_response(request, response)
@@ -232,18 +281,7 @@ local function finalize_success(request, response)
 
     -- Handle download directive
     if request.download_path ~= nil then
-        local filename = derive_download_filename(request, response)
-        filename = ensure_extension(filename, pr.content_type)
-        local success, err = file_utils.write_file(filename, response.body or "")
-        if success then
-            pr.formatted_body = string.format("Downloaded to: %s\nSize: %d bytes", filename, #(response.body or ""))
-            pr.download_filename = filename
-            vim.notify(string.format("[http_client] Downloaded to %s (%d bytes)", filename, #(response.body or "")),
-                vim.log.levels.INFO)
-        else
-            pr.formatted_body = string.format("Download failed: %s", err)
-            vim.notify("[http_client] Download failed: " .. tostring(err), vim.log.levels.ERROR)
-        end
+        finalize_download(request, response, pr, request._download_output_path)
     end
 
     display.show_response(pr)
@@ -316,6 +354,12 @@ M.send_request = function(request)
             end)
         end,
     }
+
+    local download_output_path = resolve_download_output_path(request)
+    if download_output_path then
+        curl_options.output = download_output_path
+        request._download_output_path = download_output_path
+    end
 
     if profile then
         curl_options.on_start = function()
@@ -438,18 +482,7 @@ M.send_request_unmanaged = function(request, on_done)
 
         -- Handle download directive
         if request.download_path ~= nil then
-            local filename = derive_download_filename(request, response)
-            filename = ensure_extension(filename, pr.content_type)
-            local success, err = file_utils.write_file(filename, response.body or "")
-            if success then
-                pr.formatted_body = string.format("Downloaded to: %s\nSize: %d bytes", filename, #(response.body or ""))
-                pr.download_filename = filename
-                vim.notify(string.format("[http_client] Downloaded to %s (%d bytes)", filename, #(response.body or "")),
-                    vim.log.levels.INFO)
-            else
-                pr.formatted_body = string.format("Download failed: %s", err)
-                vim.notify("[http_client] Download failed: " .. tostring(err), vim.log.levels.ERROR)
-            end
+            finalize_download(request, response, pr, request._download_output_path)
         end
 
         handle_response(pr)
@@ -485,6 +518,12 @@ M.send_request_unmanaged = function(request, on_done)
             end)
         end,
     }
+
+    local download_output_path = resolve_download_output_path(request)
+    if download_output_path then
+        curl_options.output = download_output_path
+        request._download_output_path = download_output_path
+    end
 
     if request.http_version then
         if request.http_version == "HTTP/2" or request.http_version == "HTTP/2 (Prior Knowledge)" then

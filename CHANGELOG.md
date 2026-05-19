@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * The response buffer shows a download summary instead of the full body.
   * Works with both `:HttpRun` and `:HttpRunAll`.
   * Response state now preserves `raw_body` alongside `formatted_body` for accurate saving.
+
+### Fixed
+* Binary downloads (e.g. `.zip`) are no longer corrupted. Downloads now bypass `plenary.job`'s stdout line-splitting (which strips `\r` bytes) by passing curl's `-o` option directly to the filesystem.
 * Loading state for in-flight requests:
   * A response buffer now opens immediately on `:HttpRun` and shows the method, URL, and a Braille spinner (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`) ticking at ~80ms.
   * Elapsed time appears after 500ms (e.g. `0.8s`).
