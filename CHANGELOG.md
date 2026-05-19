@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 * Binary downloads (e.g. `.zip`) are no longer corrupted. Downloads now bypass `plenary.job`'s stdout line-splitting (which strips `\r` bytes) by passing curl's `-o` option directly to the filesystem.
+* Downloaded files are now saved relative to the `.http` file's directory instead of Neovim's current working directory. Intermediate subdirectories are created automatically.
 * Loading state for in-flight requests:
   * A response buffer now opens immediately on `:HttpRun` and shows the method, URL, and a Braille spinner (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`) ticking at ~80ms.
   * Elapsed time appears after 500ms (e.g. `0.8s`).

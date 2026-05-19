@@ -94,10 +94,22 @@ end
 
 local uv = vim.uv or vim.loop
 
+local function resolve_path(base_dir, filename)
+    if not filename then
+        return nil
+    end
+    -- Absolute path (Unix or Windows)
+    if filename:sub(1, 1) == "/" or filename:match("^[A-Za-z]:[/\\]") then
+        return filename
+    end
+    return vim.fn.fnamemodify(base_dir .. "/" .. filename, ":p")
+end
+
 local function resolve_download_output_path(request)
+    local base_dir = request._download_dir or vim.fn.getcwd()
     if request.download_path ~= nil then
         if request.download_path ~= "" then
-            return request.download_path
+            return resolve_path(base_dir, request.download_path)
         else
             return os.tmpname()
         end
@@ -106,19 +118,45 @@ local function resolve_download_output_path(request)
 end
 
 local function finalize_download(request, response, pr, output_path)
+    local base_dir = request._download_dir or vim.fn.getcwd()
     local filename
     if request.download_path ~= "" then
-        filename = request.download_path
+        filename = output_path
     else
         filename = derive_download_filename(request, response)
         filename = ensure_extension(filename, pr.content_type)
+        filename = resolve_path(base_dir, filename)
+
+        -- Ensure parent directory exists before moving
+        local parent = vim.fn.fnamemodify(filename, ":h")
+        if parent ~= "" and vim.fn.isdirectory(parent) == 0 then
+            vim.fn.mkdir(parent, "p")
+        end
+
         if filename ~= output_path then
             local ok_rename, err_rename = pcall(function()
                 uv.fs_rename(output_path, filename)
             end)
             if not ok_rename then
-                filename = output_path
-                vim.notify("[http_client] Download rename failed: " .. tostring(err_rename), vim.log.levels.WARN)
+                -- Cross-device link or other error: copy instead
+                local ok_copy = pcall(function()
+                    local src = io.open(output_path, "rb")
+                    if not src then error("cannot open temp") end
+                    local data = src:read("*a")
+                    src:close()
+                    local dst = io.open(filename, "wb")
+                    if not dst then error("cannot open dest") end
+                    dst:write(data)
+                    dst:close()
+                    uv.fs_unlink(output_path)
+                end)
+                if not ok_copy then
+                    filename = output_path
+                    vim.notify(
+                        "[http_client] Download save failed: " .. tostring(err_rename),
+                        vim.log.levels.WARN
+                    )
+                end
             end
         end
     end
@@ -297,6 +335,13 @@ local function finalize_error(request, err)
 end
 
 M.send_request = function(request)
+    if not request._download_dir then
+        local bufname = vim.api.nvim_buf_get_name(0)
+        if bufname and bufname ~= "" then
+            request._download_dir = vim.fn.fnamemodify(bufname, ":h")
+        end
+    end
+
     vvv.debug_print("Sending request...")
     vvv.debug_print(string.format("Method: %s, URL: %s, HTTP Version: %s", request.method, request.url,
         request.http_version))
@@ -357,6 +402,11 @@ M.send_request = function(request)
 
     local download_output_path = resolve_download_output_path(request)
     if download_output_path then
+        -- Ensure parent directory exists so curl -o does not fail
+        local parent = vim.fn.fnamemodify(download_output_path, ":h")
+        if parent ~= "" and vim.fn.isdirectory(parent) == 0 then
+            vim.fn.mkdir(parent, "p")
+        end
         curl_options.output = download_output_path
         request._download_output_path = download_output_path
     end
@@ -453,6 +503,13 @@ end
 --   * on success: ok = true,  pr_or_err = pr (the prepared response)
 --   * on failure: ok = false, pr_or_err = err table { message, stderr, exit }
 M.send_request_unmanaged = function(request, on_done)
+    if not request._download_dir then
+        local bufname = vim.api.nvim_buf_get_name(0)
+        if bufname and bufname ~= "" then
+            request._download_dir = vim.fn.fnamemodify(bufname, ":h")
+        end
+    end
+
     local profile = profiling_enabled()
 
     request.request_id = profiling.generate_request_id()
@@ -521,6 +578,10 @@ M.send_request_unmanaged = function(request, on_done)
 
     local download_output_path = resolve_download_output_path(request)
     if download_output_path then
+        local parent = vim.fn.fnamemodify(download_output_path, ":h")
+        if parent ~= "" and vim.fn.isdirectory(parent) == 0 then
+            vim.fn.mkdir(parent, "p")
+        end
         curl_options.output = download_output_path
         request._download_output_path = download_output_path
     end
