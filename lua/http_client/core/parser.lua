@@ -104,7 +104,8 @@ M.parse_request = function(lines)
         url = nil,
         headers = {},
         body = nil,
-        http_version = nil
+        http_version = nil,
+        download_path = nil,
     }
 
     local stage = "start"
@@ -127,16 +128,24 @@ M.parse_request = function(lines)
                 stage = "body"
             end
         elseif stage == "start" then
-            line = remove_comment(line)
-            local method, url, version = line:match("^(%S+)%s+(.+)%s+(HTTP/%S+)$")
-            if not method then
-                method, url = line:match("^(%S+)%s+(.+)$")
-            end
-            if method and url then
-                request.method = method
-                request.url = url
-                request.http_version = version or "HTTP/1.1"
-                stage = "headers"
+            -- Check for directives before the request line
+            local directive, directive_value = line:match("^#%s*@(%S+)%s*(.*)$")
+            if directive == "download" then
+                request.download_path = trim(directive_value)
+            elseif directive then
+                -- ignore unknown directives for forward compatibility
+            else
+                line = remove_comment(line)
+                local method, url, version = line:match("^(%S+)%s+(.+)%s+(HTTP/%S+)$")
+                if not method then
+                    method, url = line:match("^(%S+)%s+(.+)$")
+                end
+                if method and url then
+                    request.method = method
+                    request.url = url
+                    request.http_version = version or "HTTP/1.1"
+                    stage = "headers"
+                end
             end
         elseif stage == "headers" then
             line = remove_comment(line)

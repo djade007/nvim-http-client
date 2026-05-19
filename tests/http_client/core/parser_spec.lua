@@ -203,6 +203,46 @@ describe("Parser", function()
             local request = parser.parse_request(lines)
             assert.are.equal(request.headers['#X-Not-in'], nil)
         end)
+
+        it("should parse a request with download directive and explicit filename", function()
+            local lines = {
+                "# @download output.pdf",
+                "GET https://example.com/file.pdf HTTP/1.1",
+            }
+            local request = parser.parse_request(lines)
+            assert.are.equal(request.method, "GET")
+            assert.are.equal(request.url, "https://example.com/file.pdf")
+            assert.are.equal(request.download_path, "output.pdf")
+        end)
+
+        it("should parse a request with download directive without filename", function()
+            local lines = {
+                "# @download",
+                "GET https://example.com/file.pdf HTTP/1.1",
+            }
+            local request = parser.parse_request(lines)
+            assert.are.equal(request.method, "GET")
+            assert.are.equal(request.download_path, "")
+        end)
+
+        it("should ignore unknown directives", function()
+            local lines = {
+                "# @unknown something",
+                "GET https://example.com/test HTTP/1.1",
+            }
+            local request = parser.parse_request(lines)
+            assert.are.equal(request.method, "GET")
+            assert.is_nil(request.download_path)
+        end)
+
+        it("should parse download directive with extra whitespace", function()
+            local lines = {
+                "#  @download   my-file.zip  ",
+                "GET https://example.com/api HTTP/1.1",
+            }
+            local request = parser.parse_request(lines)
+            assert.are.equal(request.download_path, "my-file.zip")
+        end)
     end)
 
     describe("parse_all_requests", function()

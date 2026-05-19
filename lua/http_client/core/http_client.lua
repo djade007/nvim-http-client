@@ -40,6 +40,8 @@ local function detect_content_type(headers)
     return "text"
 end
 
+local file_utils = require('http_client.utils.file_utils')
+
 local function clean_invalid_escapes(json_str)
     -- Remove octal/decimal escapes like \13
     json_str = json_str:gsub("\\%d%d?%d?", "")
@@ -48,16 +50,63 @@ local function clean_invalid_escapes(json_str)
     return json_str
 end
 
+local function derive_download_filename(request, response)
+    if request.download_path and request.download_path ~= "" then
+        return request.download_path
+    end
+
+    -- Try Content-Disposition header
+    for k, v in pairs(response.headers or {}) do
+        local header_key, header_value
+        if type(k) == "number" and type(v) == "string" then
+            header_key, header_value = v:match("^(.-):%s*(.*)")
+        elseif type(k) == "string" then
+            header_key, header_value = k, v
+        end
+        if header_key and header_key:lower() == "content-disposition" then
+            local filename = header_value:match('filename="?([^"]+)"?')
+            if filename then
+                return filename
+            end
+        end
+    end
+
+    -- Try URL path
+    local url_path = request.url:match(".*/([^/]+)$")
+    if url_path and url_path ~= "" then
+        return url_path
+    end
+
+    return "download"
+end
+
+local function ensure_extension(filename, content_type)
+    if filename:match("%.%w+%??.*$") then
+        return filename
+    end
+    local ext_map = {
+        json = ".json",
+        xml = ".xml",
+        html = ".html",
+        csv = ".csv",
+        text = ".txt",
+    }
+    return filename .. (ext_map[content_type] or ".bin")
+end
+
 local function prepare_response(request, response)
     local content_type = detect_content_type(response.headers or {})
-    local formatted_body = response.body or "No body"
+    local raw_body = response.body or "No body"
+    local formatted_body = raw_body
 
-    if content_type == "json" then
+    -- For download requests, keep the raw body intact
+    if content_type == "json" and request.download_path == nil then
         formatted_body = clean_invalid_escapes(formatted_body)
     end
 
     local pr = {
         formatted_body = formatted_body,
+        raw_body = raw_body,
         headers = response.headers or {},
         status = response.status or "N/A",
         content_type = content_type,
@@ -70,6 +119,7 @@ local function prepare_response(request, response)
         },
         request_id = request.request_id,
         timing_metrics = response.timing_metrics or {},
+        is_download = request.download_path ~= nil,
     }
 
     -- store_response deepcopies pr; the ui table contains a uv timer handle that
@@ -83,15 +133,17 @@ local function handle_response(pr)
     local response_handler = require('http_client.core.response_handler')
     if pr.response_handler then
         local body
+        -- For downloads, give the handler the raw body instead of the display summary.
+        local body_source = pr.is_download and pr.raw_body or pr.formatted_body
         if pr.content_type == "json" then
-            local ok, decoded = pcall(vim.json.decode, pr.formatted_body)
+            local ok, decoded = pcall(vim.json.decode, body_source)
             if ok then
                 body = decoded
             else
-                body = pr.formatted_body
+                body = body_source
             end
         else
-            body = pr.formatted_body
+            body = body_source
         end
 
         response_handler.execute(pr.response_handler, {
@@ -177,6 +229,22 @@ local function finalize_success(request, response)
     -- prepare_response intentionally omits ui from pr because state.store_response
     -- deepcopies the table and vim.deepcopy can't copy uv timer userdata.
     pr.ui = request.ui
+
+    -- Handle download directive
+    if request.download_path ~= nil then
+        local filename = derive_download_filename(request, response)
+        filename = ensure_extension(filename, pr.content_type)
+        local success, err = file_utils.write_file(filename, response.body or "")
+        if success then
+            pr.formatted_body = string.format("Downloaded to: %s\nSize: %d bytes", filename, #(response.body or ""))
+            pr.download_filename = filename
+            vim.notify(string.format("[http_client] Downloaded to %s (%d bytes)", filename, #(response.body or "")),
+                vim.log.levels.INFO)
+        else
+            pr.formatted_body = string.format("Download failed: %s", err)
+            vim.notify("[http_client] Download failed: " .. tostring(err), vim.log.levels.ERROR)
+        end
+    end
 
     display.show_response(pr)
     handle_response(pr)
@@ -367,6 +435,23 @@ M.send_request_unmanaged = function(request, on_done)
             response.timing_metrics.url = request.url
         end
         local pr = prepare_response(request, response)
+
+        -- Handle download directive
+        if request.download_path ~= nil then
+            local filename = derive_download_filename(request, response)
+            filename = ensure_extension(filename, pr.content_type)
+            local success, err = file_utils.write_file(filename, response.body or "")
+            if success then
+                pr.formatted_body = string.format("Downloaded to: %s\nSize: %d bytes", filename, #(response.body or ""))
+                pr.download_filename = filename
+                vim.notify(string.format("[http_client] Downloaded to %s (%d bytes)", filename, #(response.body or "")),
+                    vim.log.levels.INFO)
+            else
+                pr.formatted_body = string.format("Download failed: %s", err)
+                vim.notify("[http_client] Download failed: " .. tostring(err), vim.log.levels.ERROR)
+            end
+        end
+
         handle_response(pr)
         if profile then
             pcall(profiling.clear_metrics, request.request_id)

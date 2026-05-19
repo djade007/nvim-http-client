@@ -24,7 +24,7 @@ M.save_response = function(opts)
     end
 
     local default_ext = get_extension_for_content_type(response.content_type)
-    local content = opts and opts.raw and response.raw_body or response.formatted_body
+    local content = opts and opts.raw and (response.raw_body or response.formatted_body) or response.formatted_body
 
     vim.ui.input({
         prompt = "Save response as (default extension: " .. default_ext .. "): ",

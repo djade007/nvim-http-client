@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+* Download directives (`# @download`):
+  * Add `# @download filename.ext` before a request line to auto-save the response body to a file.
+  * Omit the filename (`# @download`) to auto-detect it from `Content-Disposition`, URL path, or content type.
+  * Download requests skip JSON escape cleaning and formatting, preserving the raw response bytes.
+  * The response buffer shows a download summary instead of the full body.
+  * Works with both `:HttpRun` and `:HttpRunAll`.
+  * Response state now preserves `raw_body` alongside `formatted_body` for accurate saving.
 * Loading state for in-flight requests:
   * A response buffer now opens immediately on `:HttpRun` and shows the method, URL, and a Braille spinner (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`) ticking at ~80ms.
   * Elapsed time appears after 500ms (e.g. `0.8s`).

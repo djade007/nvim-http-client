@@ -119,4 +119,33 @@ describe("http_client._prepare_response", function()
         assert.are.equal("N/A", pr.request.test_name)
         assert.are.equal("N/A", pr.request.http_version)
     end)
+
+    it("stores raw_body alongside formatted_body", function()
+        local pr = hc._prepare_response(
+            { method = "GET", url = "x", headers = {}, request_id = "r" },
+            { body = "hello", headers = { "Content-Type: text/plain" }, status = 200 }
+        )
+        assert.are.equal("hello", pr.raw_body)
+        assert.are.equal("hello", pr.formatted_body)
+    end)
+
+    it("does NOT clean invalid JSON escapes for download requests", function()
+        local body_with_invalid_escape = '{"msg":"hello\\13world"}'
+        local pr = hc._prepare_response(
+            { method = "GET", url = "x", headers = {}, request_id = "r", download_path = "" },
+            { body = body_with_invalid_escape, headers = { "Content-Type: application/json" }, status = 200 }
+        )
+        assert.are.equal(body_with_invalid_escape, pr.raw_body)
+        assert.are.equal(body_with_invalid_escape, pr.formatted_body)
+    end)
+
+    it("cleans invalid JSON escapes for non-download JSON requests", function()
+        local body_with_invalid_escape = '{"msg":"hello\\13world"}'
+        local pr = hc._prepare_response(
+            { method = "GET", url = "x", headers = {}, request_id = "r" },
+            { body = body_with_invalid_escape, headers = { "Content-Type: application/json" }, status = 200 }
+        )
+        assert.are.equal(body_with_invalid_escape, pr.raw_body)
+        assert.are.equal('{"msg":"helloworld"}', pr.formatted_body)
+    end)
 end)

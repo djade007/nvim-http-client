@@ -172,3 +172,36 @@ When saving a response:
 1. You'll be prompted for a filename
 2. The response body will be formatted (if it's JSON or XML)
 3. The formatted content will be saved to the specified file
+
+## Download Directives
+
+You can mark a request so that its response body is automatically saved to a file instead of being displayed in the response buffer. This is useful for downloading binary files, PDFs, images, or any large content you don't want to render inline.
+
+Use the `# @download` directive as a comment before the request line:
+
+```http
+### Download a PDF report
+# @download report.pdf
+GET {{host}}/api/reports/monthly
+Accept: application/pdf
+```
+
+If you omit the filename, the plugin will try to derive one automatically:
+
+1. From the `Content-Disposition` header's `filename` parameter
+2. From the last path segment of the request URL
+3. Falling back to `download` with an extension guessed from the response `Content-Type`
+
+```http
+### Download with auto filename
+# @download
+GET {{host}}/api/export/csv
+Accept: text/csv
+```
+
+When a download directive is active:
+- The raw response body is written to the file **without** any formatting or escape cleaning.
+- The response buffer shows a short summary (saved path and file size) instead of the full body.
+- The download works with both `:HttpRun` (single request) and `:HttpRunAll` (batch requests).
+
+**Note:** The file is saved relative to Neovim's current working directory (or the project root if set via `:HttpSetProjectRoot`).
